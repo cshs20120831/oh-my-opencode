@@ -1,6 +1,17 @@
-import { describe, expect, it } from "bun:test";
-import { mergeConfigs } from "./plugin-config";
+import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { mergeConfigs, loadPluginConfig } from "./plugin-config";
 import type { OhMyOpenCodeConfig } from "./config";
+import { clearConfigLoadErrors, getConfigLoadErrors } from "./shared/config-errors";
+
+const ORIGINAL_OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR;
+
+function writeJson(filePath: string, data: unknown): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+}
 
 describe("mergeConfigs", () => {
   describe("categories merging", () => {
@@ -115,5 +126,127 @@ describe("mergeConfigs", () => {
       expect(result.disabled_hooks).toContain("session-recovery");
       expect(result.disabled_hooks?.length).toBe(3);
     });
+  });
+});
+
+describe("loadPluginConfig - profile auto-discovery", () => {
+  let projectDir: string;
+  let userDir: string;
+
+  beforeEach(() => {
+    clearConfigLoadErrors();
+    projectDir = mkdtempSync(join(tmpdir(), "omo-project-"));
+    userDir = mkdtempSync(join(tmpdir(), "omo-user-"));
+    process.env.OPENCODE_CONFIG_DIR = userDir;
+  });
+
+  afterEach(() => {
+    process.env.OPENCODE_CONFIG_DIR = ORIGINAL_OPENCODE_CONFIG_DIR;
+    try {
+      rmSync(projectDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+    try {
+      rmSync(userDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  it("applies profile overrides without letting user scope override project scope", () => {
+    // #given
+    // user base config
+    writeJson(join(userDir, "oh-my-opencode.json"), {
+      disabled_hooks: ["think-mode"],
+      agents: {
+        oracle: { model: "openai/gpt-5.2" },
+      },
+    });
+
+    // user profile wants to set temperature
+    writeJson(join(userDir, "Bios_Muitle_Agent_profile.json"), {
+      agents: {
+        oracle: { temperature: 0.2 },
+      },
+    });
+
+    // project base config overrides temperature
+    writeJson(join(projectDir, ".opencode", "oh-my-opencode.json"), {
+      agents: {
+        oracle: { temperature: 0.9 },
+      },
+    });
+
+    // project profile overrides again
+    writeJson(join(projectDir, ".opencode", "Bios_Muitle_Agent_profile.json"), {
+      agents: {
+        oracle: { temperature: 0.1 },
+      },
+    });
+
+    // #when
+    const result = loadPluginConfig(projectDir, {});
+
+    // #then
+    expect(result.agents?.oracle?.model).toBe("openai/gpt-5.2");
+    expect(result.agents?.oracle?.temperature).toBe(0.1);
+    expect(result.disabled_hooks).toContain("think-mode");
+  });
+
+  it("uses root profile as a project-scope override (lower than .opencode profile)", () => {
+    // #given
+    writeJson(join(userDir, "oh-my-opencode.json"), {
+      agents: { oracle: { temperature: 0.8 } },
+    });
+
+    writeJson(join(projectDir, ".opencode", "oh-my-opencode.json"), {
+      agents: { oracle: { temperature: 0.9 } },
+    });
+
+    // root profile should override project base
+    writeJson(join(projectDir, "Bios_Muitle_Agent_profile.json"), {
+      agents: { oracle: { temperature: 0.3 } },
+    });
+
+    // #when
+    const result = loadPluginConfig(projectDir, {});
+
+    // #then
+    expect(result.agents?.oracle?.temperature).toBe(0.3);
+
+    // #given - .opencode profile should override root profile
+    writeJson(join(projectDir, ".opencode", "Bios_Muitle_Agent_profile.json"), {
+      agents: { oracle: { temperature: 0.1 } },
+    });
+
+    // #when
+    const result2 = loadPluginConfig(projectDir, {});
+
+    // #then
+    expect(result2.agents?.oracle?.temperature).toBe(0.1);
+  });
+
+  it("records a load error for invalid profile JSON and continues", () => {
+    // #given
+    writeJson(join(projectDir, ".opencode", "oh-my-opencode.json"), {
+      agents: { oracle: { temperature: 0.9 } },
+    });
+
+    const invalidProfilePath = join(
+      projectDir,
+      ".opencode",
+      "Bios_Muitle_Agent_profile.json"
+    );
+    mkdirSync(join(projectDir, ".opencode"), { recursive: true });
+    writeFileSync(invalidProfilePath, "{", "utf-8");
+
+    // #when
+    const result = loadPluginConfig(projectDir, {});
+
+    // #then
+    expect(result.agents?.oracle?.temperature).toBe(0.9);
+    const errors = getConfigLoadErrors();
+    expect(errors.some((e) => e.path === invalidProfilePath)).toBe(true);
   });
 });

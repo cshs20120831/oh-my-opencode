@@ -11,6 +11,68 @@ import {
   migrateConfigFile,
 } from "./shared";
 
+// NOTE: This repository may be forked/renamed.
+// Keep the profile basename aligned with the intended plugin identity.
+const PLUGIN_CONFIG_BASENAME = "oh-my-opencode";
+const PLUGIN_PROFILE_BASENAME = "Bios_Muitle_Agent_profile";
+
+function resolveDetectedConfigPath(basePath: string): string {
+  const detected = detectConfigFile(basePath);
+  return detected.format !== "none" ? detected.path : basePath + ".json";
+}
+
+function loadProfileLayeredConfig(
+  directory: string,
+  ctx: unknown
+): {
+  userProfilePath: string;
+  rootProfilePath: string;
+  projectProfilePath: string;
+  userProfile: OhMyOpenCodeConfig | null;
+  rootProfile: OhMyOpenCodeConfig | null;
+  projectProfile: OhMyOpenCodeConfig | null;
+  mergedUser: OhMyOpenCodeConfig;
+  mergedProject: OhMyOpenCodeConfig;
+} {
+  const configDir = getOpenCodeConfigDir({ binary: "opencode" });
+
+  const userProfileBasePath = path.join(configDir, PLUGIN_PROFILE_BASENAME);
+  const rootProfileBasePath = path.join(directory, PLUGIN_PROFILE_BASENAME);
+  const projectProfileBasePath = path.join(
+    directory,
+    ".opencode",
+    PLUGIN_PROFILE_BASENAME
+  );
+
+  const userProfilePath = resolveDetectedConfigPath(userProfileBasePath);
+  const rootProfilePath = resolveDetectedConfigPath(rootProfileBasePath);
+  const projectProfilePath = resolveDetectedConfigPath(projectProfileBasePath);
+
+  const userProfile = loadConfigFromPath(userProfilePath, ctx);
+  const rootProfile = loadConfigFromPath(rootProfilePath, ctx);
+  const projectProfile = loadConfigFromPath(projectProfilePath, ctx);
+
+  // Scope-aware layering: user scope should never override project scope.
+  // - user scope: userProfile
+  // - project scope: rootProfile (project root) < projectProfile (.opencode)
+  const mergedUser: OhMyOpenCodeConfig = userProfile ?? {};
+  let mergedProject: OhMyOpenCodeConfig = rootProfile ?? {};
+  if (projectProfile) {
+    mergedProject = mergeConfigs(mergedProject, projectProfile);
+  }
+
+  return {
+    userProfilePath,
+    rootProfilePath,
+    projectProfilePath,
+    userProfile,
+    rootProfile,
+    projectProfile,
+    mergedUser,
+    mergedProject,
+  };
+}
+
 export function loadConfigFromPath(
   configPath: string,
   ctx: unknown
@@ -96,30 +158,30 @@ export function loadPluginConfig(
 ): OhMyOpenCodeConfig {
   // User-level config path - prefer .jsonc over .json
   const configDir = getOpenCodeConfigDir({ binary: "opencode" });
-  const userBasePath = path.join(configDir, "oh-my-opencode");
-  const userDetected = detectConfigFile(userBasePath);
-  const userConfigPath =
-    userDetected.format !== "none"
-      ? userDetected.path
-      : userBasePath + ".json";
+  const userBasePath = path.join(configDir, PLUGIN_CONFIG_BASENAME);
+  const userConfigPath = resolveDetectedConfigPath(userBasePath);
 
   // Project-level config path - prefer .jsonc over .json
-  const projectBasePath = path.join(directory, ".opencode", "oh-my-opencode");
-  const projectDetected = detectConfigFile(projectBasePath);
-  const projectConfigPath =
-    projectDetected.format !== "none"
-      ? projectDetected.path
-      : projectBasePath + ".json";
+  const projectBasePath = path.join(
+    directory,
+    ".opencode",
+    PLUGIN_CONFIG_BASENAME
+  );
+  const projectConfigPath = resolveDetectedConfigPath(projectBasePath);
 
-  // Load user config first (base)
-  let config: OhMyOpenCodeConfig =
-    loadConfigFromPath(userConfigPath, ctx) ?? {};
+  const profile = loadProfileLayeredConfig(directory, ctx);
 
-  // Override with project config
-  const projectConfig = loadConfigFromPath(projectConfigPath, ctx);
-  if (projectConfig) {
-    config = mergeConfigs(config, projectConfig);
-  }
+  // Scope-aware layering:
+  // - user scope: user config < user profile
+  // - project scope: project config < root profile < .opencode profile
+  // - final: user scope < project scope
+  const userBase = loadConfigFromPath(userConfigPath, ctx) ?? {};
+  const mergedUser = mergeConfigs(userBase, profile.mergedUser);
+
+  const projectBase = loadConfigFromPath(projectConfigPath, ctx) ?? {};
+  const mergedProject = mergeConfigs(projectBase, profile.mergedProject);
+
+  const config = mergeConfigs(mergedUser, mergedProject);
 
   log("Final merged config", {
     agents: config.agents,
@@ -127,6 +189,11 @@ export function loadPluginConfig(
     disabled_mcps: config.disabled_mcps,
     disabled_hooks: config.disabled_hooks,
     claude_code: config.claude_code,
+    profile_paths: {
+      user: profile.userProfile ? profile.userProfilePath : null,
+      root: profile.rootProfile ? profile.rootProfilePath : null,
+      project: profile.projectProfile ? profile.projectProfilePath : null,
+    },
   });
   return config;
 }

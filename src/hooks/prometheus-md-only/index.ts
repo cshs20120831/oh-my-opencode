@@ -1,7 +1,7 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import { existsSync, readdirSync } from "node:fs"
 import { join, resolve, relative, isAbsolute } from "node:path"
-import { HOOK_NAME, PROMETHEUS_AGENTS, ALLOWED_EXTENSIONS, ALLOWED_PATH_PREFIX, BLOCKED_TOOLS, PLANNING_CONSULT_WARNING, PROMETHEUS_WORKFLOW_REMINDER } from "./constants"
+import { HOOK_NAME, PROMETHEUS_AGENT, ALLOWED_EXTENSIONS, ALLOWED_PATH_PREFIX, BLOCKED_TOOLS, PLANNING_CONSULT_WARNING, PROMETHEUS_WORKFLOW_REMINDER } from "./constants"
 import { findNearestMessageWithFields, findFirstMessageWithAgent, MESSAGE_STORAGE } from "../../features/hook-message-injector"
 import { getSessionAgent } from "../../features/claude-code-session-state"
 import { log } from "../../shared/logger"
@@ -82,7 +82,7 @@ export function createPrometheusMdOnlyHook(ctx: PluginInput) {
     ): Promise<void> => {
       const agentName = getAgentFromSession(input.sessionID)
 
-      if (!agentName || !PROMETHEUS_AGENTS.includes(agentName)) {
+      if (agentName !== PROMETHEUS_AGENT) {
         return
       }
 
@@ -104,6 +104,20 @@ export function createPrometheusMdOnlyHook(ctx: PluginInput) {
 
       if (!BLOCKED_TOOLS.includes(toolName)) {
         return
+      }
+
+      // Block bash commands completely - Prometheus is read-only
+      if (toolName === "bash") {
+        log(`[${HOOK_NAME}] Blocked: Prometheus cannot execute bash commands`, {
+          sessionID: input.sessionID,
+          tool: toolName,
+          agent: agentName,
+        })
+        throw new Error(
+          `[${HOOK_NAME}] ${getAgentDisplayName("prometheus")} cannot execute bash commands. ` +
+          `${getAgentDisplayName("prometheus")} is a READ-ONLY planner. Use /start-work to execute the plan. ` +
+          `APOLOGIZE TO THE USER, REMIND OF YOUR PLAN WRITING PROCESSES, TELL USER WHAT YOU WILL GOING TO DO AS THE PROCESS, WRITE THE PLAN`
+        )
       }
 
       const filePath = (output.args.filePath ?? output.args.path ?? output.args.file) as string | undefined

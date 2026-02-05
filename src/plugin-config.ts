@@ -183,6 +183,10 @@ export function loadPluginConfig(
 
   const config = mergeConfigs(mergedUser, mergedProject);
 
+  config = {
+    ...config,
+  };
+
   log("Final merged config", {
     agents: config.agents,
     disabled_agents: config.disabled_agents,

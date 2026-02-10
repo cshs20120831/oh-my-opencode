@@ -113,15 +113,61 @@ describe("look-at tool", () => {
   describe("createLookAt error handling", () => {
     // given JSON parse error occurs in session.prompt
     // when LookAt tool executed
-    // then return user-friendly error message
-    test("handles JSON parse error from session.prompt gracefully", async () => {
+    // then error is caught and messages are still fetched
+    test("catches JSON parse error and returns assistant message if available", async () => {
+      const throwingMock = async () => {
+        throw new Error("JSON Parse error: Unexpected EOF")
+      }
       const mockClient = {
         session: {
           get: async () => ({ data: { directory: "/project" } }),
           create: async () => ({ data: { id: "ses_test_json_error" } }),
-          prompt: async () => {
-            throw new Error("JSON Parse error: Unexpected EOF")
-          },
+          prompt: throwingMock,
+          promptAsync: throwingMock,
+          messages: async () => ({
+            data: [
+              { info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "analysis result" }] },
+            ],
+          }),
+        },
+      }
+
+      const tool = createLookAt({
+        client: mockClient,
+        directory: "/project",
+      } as any)
+
+      const toolContext: ToolContext = {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+        directory: "/project",
+        worktree: "/project",
+        abort: new AbortController().signal,
+        metadata: () => {},
+        ask: async () => {},
+      }
+
+      const result = await tool.execute(
+        { file_path: "/test/file.png", goal: "analyze image" },
+        toolContext,
+      )
+      expect(result).toBe("analysis result")
+    })
+
+    // given JSON parse error occurs and no messages available
+    // when LookAt tool executed
+    // then returns error string (not throw)
+    test("catches JSON parse error and returns error when no messages", async () => {
+      const throwingMock = async () => {
+        throw new Error("JSON Parse error: Unexpected EOF")
+      }
+      const mockClient = {
+        session: {
+          get: async () => ({ data: { directory: "/project" } }),
+          create: async () => ({ data: { id: "ses_test_json_no_msg" } }),
+          prompt: throwingMock,
+          promptAsync: throwingMock,
           messages: async () => ({ data: [] }),
         },
       }
@@ -144,26 +190,69 @@ describe("look-at tool", () => {
 
       const result = await tool.execute(
         { file_path: "/test/file.png", goal: "analyze image" },
-        toolContext
+        toolContext,
       )
-
-      expect(result).toContain("Error: Failed to analyze")
-      expect(result).toContain("malformed response")
+      expect(result).toContain("Error")
       expect(result).toContain("multimodal-looker")
-      expect(result).toContain("image/png")
     })
 
-    // given generic error occurs in session.prompt
+    // given empty object error {} thrown (the actual production bug)
     // when LookAt tool executed
-    // then return error including original error message
-    test("handles generic prompt error gracefully", async () => {
+    // then error is caught gracefully, not re-thrown
+    test("catches empty object error from session.prompt", async () => {
+      const throwingMock = async () => {
+        throw {}
+      }
+      const mockClient = {
+        session: {
+          get: async () => ({ data: { directory: "/project" } }),
+          create: async () => ({ data: { id: "ses_test_empty_obj" } }),
+          prompt: throwingMock,
+          promptAsync: throwingMock,
+          messages: async () => ({
+            data: [
+              { info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "got it" }] },
+            ],
+          }),
+        },
+      }
+
+      const tool = createLookAt({
+        client: mockClient,
+        directory: "/project",
+      } as any)
+
+      const toolContext: ToolContext = {
+        sessionID: "parent-session",
+        messageID: "parent-message",
+        agent: "sisyphus",
+        directory: "/project",
+        worktree: "/project",
+        abort: new AbortController().signal,
+        metadata: () => {},
+        ask: async () => {},
+      }
+
+      const result = await tool.execute(
+        { file_path: "/test/file.png", goal: "analyze" },
+        toolContext,
+      )
+      expect(result).toBe("got it")
+    })
+
+    // given generic network error
+    // when LookAt tool executed
+    // then error is caught and returns error string when no messages
+    test("catches generic prompt error and returns error string", async () => {
+      const throwingMock = async () => {
+        throw new Error("Network connection failed")
+      }
       const mockClient = {
         session: {
           get: async () => ({ data: { directory: "/project" } }),
           create: async () => ({ data: { id: "ses_test_generic_error" } }),
-          prompt: async () => {
-            throw new Error("Network connection failed")
-          },
+          prompt: throwingMock,
+          promptAsync: throwingMock,
           messages: async () => ({ data: [] }),
         },
       }
@@ -186,11 +275,10 @@ describe("look-at tool", () => {
 
       const result = await tool.execute(
         { file_path: "/test/file.pdf", goal: "extract text" },
-        toolContext
+        toolContext,
       )
-
-      expect(result).toContain("Error: Failed to send prompt")
-      expect(result).toContain("Network connection failed")
+      expect(result).toContain("Error")
+      expect(result).toContain("multimodal-looker")
     })
   })
 
@@ -217,6 +305,10 @@ describe("look-at tool", () => {
           get: async () => ({ data: { directory: "/project" } }),
           create: async () => ({ data: { id: "ses_model_passthrough" } }),
           prompt: async (input: any) => {
+            promptBody = input.body
+            return { data: {} }
+          },
+          promptAsync: async (input: any) => {
             promptBody = input.body
             return { data: {} }
           },
@@ -274,6 +366,10 @@ describe("look-at tool", () => {
             promptBody = input.body
             return { data: {} }
           },
+          promptAsync: async (input: any) => {
+            promptBody = input.body
+            return { data: {} }
+          },
           messages: async () => ({
             data: [
               { info: { role: "assistant", time: { created: 1 } }, parts: [{ type: "text", text: "analyzed" }] },
@@ -324,6 +420,10 @@ describe("look-at tool", () => {
           get: async () => ({ data: { directory: "/project" } }),
           create: async () => ({ data: { id: "ses_raw_base64_test" } }),
           prompt: async (input: any) => {
+            promptBody = input.body
+            return { data: {} }
+          },
+          promptAsync: async (input: any) => {
             promptBody = input.body
             return { data: {} }
           },

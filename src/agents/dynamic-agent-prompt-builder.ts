@@ -1,7 +1,8 @@
-import type { AgentPromptMetadata, BuiltinAgentName } from "./types"
+import type { AgentPromptMetadata } from "./types"
+import { truncateDescription } from "../shared/truncate-description"
 
 export interface AvailableAgent {
-  name: BuiltinAgentName
+  name: string
   description: string
   metadata: AgentPromptMetadata
 }
@@ -20,6 +21,7 @@ export interface AvailableSkill {
 export interface AvailableCategory {
   name: string
   description: string
+  model?: string
 }
 
 export function categorizeTools(toolNames: string[]): AvailableTool[] {
@@ -166,6 +168,33 @@ export function buildDelegationTable(agents: AvailableAgent[]): string {
   return rows.join("\n")
 }
 
+/**
+ * Renders the "User-Installed Skills (HIGH PRIORITY)" block used across multiple agent prompts.
+ * Extracted to avoid duplication between buildCategorySkillsDelegationGuide, buildSkillsSection, etc.
+ */
+export function formatCustomSkillsBlock(
+  customRows: string[],
+  customSkills: AvailableSkill[],
+  headerLevel: "####" | "**" = "####"
+): string {
+  const customSkillNames = customSkills.map((s) => `"${s.name}"`).join(", ")
+  const header = headerLevel === "####"
+    ? `#### User-Installed Skills (HIGH PRIORITY)`
+    : `**User-Installed Skills (HIGH PRIORITY):**`
+
+  return `${header}
+
+**The user has installed these custom skills. They MUST be evaluated for EVERY delegation.**
+Subagents are STATELESS — they lose all custom knowledge unless you pass these skills via \`load_skills\`.
+
+| Skill | Expertise Domain | Source |
+|-------|------------------|--------|
+${customRows.join("\n")}
+
+> **CRITICAL**: Ignoring user-installed skills when they match the task domain is a failure.
+> The user installed ${customSkillNames} for a reason — USE THEM when the task overlaps with their domain.`
+}
+
 export function buildCategorySkillsDelegationGuide(categories: AvailableCategory[], skills: AvailableSkill[]): string {
   if (categories.length === 0 && skills.length === 0) return ""
 
@@ -177,18 +206,18 @@ export function buildCategorySkillsDelegationGuide(categories: AvailableCategory
   const builtinSkills = skills.filter((s) => s.location === "plugin")
   const customSkills = skills.filter((s) => s.location !== "plugin")
 
-  const builtinRows = builtinSkills.map((s) => {
-    const desc = s.description.split(".")[0] || s.description
-    return `| \`${s.name}\` | ${desc} |`
-  })
+   const builtinRows = builtinSkills.map((s) => {
+     const desc = truncateDescription(s.description)
+     return `| \`${s.name}\` | ${desc} |`
+   })
 
-  const customRows = customSkills.map((s) => {
-    const desc = s.description.split(".")[0] || s.description
-    const source = s.location === "project" ? "project" : "user"
-    return `| \`${s.name}\` | ${desc} | ${source} |`
-  })
+   const customRows = customSkills.map((s) => {
+     const desc = truncateDescription(s.description)
+     const source = s.location === "project" ? "project" : "user"
+     return `| \`${s.name}\` | ${desc} | ${source} |`
+   })
 
-  const customSkillNames = customSkills.map((s) => `"${s.name}"`).join(", ")
+  const customSkillBlock = formatCustomSkillsBlock(customRows, customSkills)
 
   let skillsSection: string
 
@@ -199,29 +228,9 @@ export function buildCategorySkillsDelegationGuide(categories: AvailableCategory
 |-------|------------------|
 ${builtinRows.join("\n")}
 
-#### User-Installed Skills (HIGH PRIORITY)
-
-**The user has installed these custom skills. They MUST be evaluated for EVERY delegation.**
-Subagents are STATELESS — they lose all custom knowledge unless you pass these skills via \`load_skills\`.
-
-| Skill | Expertise Domain | Source |
-|-------|------------------|--------|
-${customRows.join("\n")}
-
-> **CRITICAL**: Ignoring user-installed skills when they match the task domain is a failure.
-> The user installed ${customSkillNames} for a reason — USE THEM when the task overlaps with their domain.`
+${customSkillBlock}`
   } else if (customSkills.length > 0) {
-    skillsSection = `#### User-Installed Skills (HIGH PRIORITY)
-
-**The user has installed these custom skills. They MUST be evaluated for EVERY delegation.**
-Subagents are STATELESS — they lose all custom knowledge unless you pass these skills via \`load_skills\`.
-
-| Skill | Expertise Domain | Source |
-|-------|------------------|--------|
-${customRows.join("\n")}
-
-> **CRITICAL**: Ignoring user-installed skills when they match the task domain is a failure.
-> The user installed ${customSkillNames} for a reason — USE THEM when the task overlaps with their domain.`
+    skillsSection = customSkillBlock
   } else {
     skillsSection = `#### Available Skills (Domain Expertise Injection)
 
@@ -234,7 +243,7 @@ ${builtinRows.join("\n")}`
 
   return `### Category + Skills Delegation System
 
-**delegate_task() combines categories and skills for optimal task execution.**
+**task() combines categories and skills for optimal task execution.**
 
 #### Available Categories (Domain-Optimized Models)
 
@@ -288,7 +297,7 @@ SKILL EVALUATION for "[skill-name]":
 ### Delegation Pattern
 
 \`\`\`typescript
-delegate_task(
+task(
   category="[selected-category]",
   load_skills=["skill-1", "skill-2"],  // Include ALL relevant skills — ESPECIALLY user-installed ones
   prompt="..."
@@ -297,7 +306,7 @@ delegate_task(
 
 **ANTI-PATTERN (will produce poor results):**
 \`\`\`typescript
-delegate_task(category="...", load_skills=[], run_in_background=false, prompt="...")  // Empty load_skills without justification
+task(category="...", load_skills=[], run_in_background=false, prompt="...")  // Empty load_skills without justification
 \`\`\``
 }
 
@@ -413,7 +422,7 @@ export function buildUltraworkSection(
 
     lines.push("**Agents** (for specialized consultation/exploration):")
     for (const agent of sortedAgents) {
-      const shortDesc = agent.description.split(".")[0] || agent.description
+      const shortDesc = agent.description.length > 120 ? agent.description.slice(0, 120) + "..." : agent.description
       const suffix = agent.name === "explore" || agent.name === "librarian" ? " (multiple)" : ""
       lines.push(`- \`${agent.name}${suffix}\`: ${shortDesc}`)
     }
